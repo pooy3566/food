@@ -36,11 +36,18 @@ jobs:
         with:
           python-version: "3.11"
 
+      # 使用仓库里的 uv.lock，避免 pip 重新解析模板的全部依赖
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
       # 安装 pytest、requests 和 HTML 报告插件
       - name: Install test dependencies
         run: |
-          python -m pip install -r qa_tests/requirements.txt
-          python -m pip install -e backend
+          uv sync --all-packages --no-dev --locked
+          uv pip install --python .venv/bin/python -r qa_tests/requirements.txt
 
       # 真实 FastAPI 测试需要先完成数据库迁移和初始管理员创建
       - name: Prepare real FastAPI database
@@ -58,8 +65,8 @@ jobs:
           ENVIRONMENT: local
           BACKEND_CORS_ORIGINS: http://localhost,http://localhost:5173
         run: |
-          alembic upgrade head
-          python -m app.initial_data
+          uv run --no-dev --no-sync alembic upgrade head
+          uv run --no-dev --no-sync python -m app.initial_data
 
       # 启动真实后端，real_api 测试会通过 localhost:8000 调用它
       - name: Start real FastAPI backend
@@ -77,7 +84,7 @@ jobs:
           ENVIRONMENT: local
           BACKEND_CORS_ORIGINS: http://localhost,http://localhost:5173
         run: |
-          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > ../real_backend.log 2>&1 &
+          nohup uv run --no-dev --no-sync python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > ../real_backend.log 2>&1 &
           echo $! > ../real_backend.pid
           for i in {1..20}; do
             if curl --fail --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
@@ -93,7 +100,7 @@ jobs:
           TEST_ADMIN_EMAIL: admin@example.com
           TEST_ADMIN_PASSWORD: changethis
         run: >-
-          python -m pytest qa_tests/real_api -v
+          uv run --no-dev --no-sync python -m pytest qa_tests/real_api -v
           --junitxml=qa_tests/reports/real-api-junit.xml
           --html=qa_tests/reports/real-api-report.html
           --self-contained-html
@@ -105,7 +112,7 @@ jobs:
       # 再运行练习版测试，保持原有 demo_server 覆盖范围
       - name: Start demo API
         run: |
-          python qa_tests/demo_server.py > demo_server.log 2>&1 &
+          nohup uv run --no-dev --no-sync python qa_tests/demo_server.py > demo_server.log 2>&1 &
           echo $! > demo_server.pid
           for i in {1..10}; do
             if curl --fail --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
@@ -117,7 +124,7 @@ jobs:
       # 同时生成终端结果、JUnit 报告和浏览器可打开的 HTML 报告
       - name: Run API tests
         run: >-
-          python -m pytest qa_tests -v
+          uv run --no-dev --no-sync python -m pytest qa_tests -v
           --ignore=qa_tests/real_api
           --junitxml=qa_tests/reports/demo-junit.xml
           --html=qa_tests/reports/demo-report.html

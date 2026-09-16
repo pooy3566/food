@@ -1,2 +1,11 @@
 [tool.uv.workspace]
 members = ["backend"]
+
+[tool.pytest.ini_options]
+# 默认只收集接口自动化测试，避免误运行模板自带的后端测试
+testpaths = ["qa_tests"]
+# 注册 smoke 标签，运行时可以只筛选关键冒烟测试
+markers = [
+    "smoke: 检查服务启动、登录和权限链路等关键功能",
+    "regression: 确认已有功能没有被新改动破坏",
+]

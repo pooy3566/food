@@ -1,0 +1,138 @@
+name: QA API Tests
+
+# 推送代码或提交 PR 时自动检查接口测试，也可以在 Actions 页面手动运行
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  api-tests:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: changethis
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      # 先把仓库代码取到 GitHub 的运行环境中
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # 测试项目使用 Python 3.11，和本地环境保持一致
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      # 安装 pytest、requests 和 HTML 报告插件
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r qa_tests/requirements.txt
+          python -m pip install -e backend
+
+      # 真实 FastAPI 测试需要先完成数据库迁移和初始管理员创建
+      - name: Prepare real FastAPI database
+        working-directory: backend
+        env:
+          POSTGRES_SERVER: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_DB: app
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: changethis
+          SECRET_KEY: ci-secret-key-for-tests-only
+          PROJECT_NAME: Full Stack FastAPI Project
+          FIRST_SUPERUSER: admin@example.com
+          FIRST_SUPERUSER_PASSWORD: changethis
+          ENVIRONMENT: local
+          BACKEND_CORS_ORIGINS: http://localhost,http://localhost:5173
+        run: |
+          alembic upgrade head
+          python -m app.initial_data
+
+      # 启动真实后端，real_api 测试会通过 localhost:8000 调用它
+      - name: Start real FastAPI backend
+        working-directory: backend
+        env:
+          POSTGRES_SERVER: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_DB: app
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: changethis
+          SECRET_KEY: ci-secret-key-for-tests-only
+          PROJECT_NAME: Full Stack FastAPI Project
+          FIRST_SUPERUSER: admin@example.com
+          FIRST_SUPERUSER_PASSWORD: changethis
+          ENVIRONMENT: local
+          BACKEND_CORS_ORIGINS: http://localhost,http://localhost:5173
+        run: |
+          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > ../real_backend.log 2>&1 &
+          echo $! > ../real_backend.pid
+          for i in {1..20}; do
+            if curl --fail --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+      # 先运行真实后端的接口自动化测试
+      - name: Run real FastAPI tests
+        env:
+          BASE_URL: http://localhost:8000
+          TEST_ADMIN_EMAIL: admin@example.com
+          TEST_ADMIN_PASSWORD: changethis
+        run: >-
+          python -m pytest qa_tests/real_api -v
+          --junitxml=qa_tests/reports/real-api-junit.xml
+          --html=qa_tests/reports/real-api-report.html
+          --self-contained-html
+
+      # demo_server 也使用 8000 端口，切换测试服务前先停止真实后端
+      - name: Stop real FastAPI backend
+        run: kill "$(cat real_backend.pid)" || true
+
+      # 再运行练习版测试，保持原有 demo_server 覆盖范围
+      - name: Start demo API
+        run: |
+          python qa_tests/demo_server.py > demo_server.log 2>&1 &
+          echo $! > demo_server.pid
+          for i in {1..10}; do
+            if curl --fail --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+      # 同时生成终端结果、JUnit 报告和浏览器可打开的 HTML 报告
+      - name: Run API tests
+        run: >-
+          python -m pytest qa_tests -v
+          --ignore=qa_tests/real_api
+          --junitxml=qa_tests/reports/demo-junit.xml
+          --html=qa_tests/reports/demo-report.html
+          --self-contained-html
+
+      # 即使测试失败，也保留报告，方便定位问题
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: qa-api-test-reports
+          path: |
+            qa_tests/reports/real-api-junit.xml
+            qa_tests/reports/real-api-report.html
+            qa_tests/reports/demo-junit.xml
+            qa_tests/reports/demo-report.html
+            demo_server.log
+            real_backend.log

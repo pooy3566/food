@@ -84,7 +84,8 @@ jobs:
           ENVIRONMENT: local
           BACKEND_CORS_ORIGINS: http://localhost,http://localhost:5173
         run: |
-          nohup uv run --no-dev --no-sync python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > ../real_backend.log 2>&1 &
+          # 直接记录 Python 进程，后面才能可靠关闭真实后端
+          nohup ../.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > ../real_backend.log 2>&1 &
           echo $! > ../real_backend.pid
           for i in {1..20}; do
             if curl --fail --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
@@ -92,6 +93,10 @@ jobs:
             fi
             sleep 1
           done
+          if ! curl --fail --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
+            cat ../real_backend.log
+            exit 1
+          fi
 
       # 先运行真实后端的接口自动化测试
       - name: Run real FastAPI tests
@@ -107,12 +112,24 @@ jobs:
 
       # demo_server 也使用 8000 端口，切换测试服务前先停止真实后端
       - name: Stop real FastAPI backend
-        run: kill "$(cat real_backend.pid)" || true
+        run: |
+          kill "$(cat real_backend.pid)" || true
+          for i in {1..10}; do
+            if ! curl --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if curl --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
+            echo "Port 8000 is still occupied after stopping the real backend."
+            exit 1
+          fi
 
       # 再运行练习版测试，保持原有 demo_server 覆盖范围
       - name: Start demo API
         run: |
-          nohup uv run --no-dev --no-sync python qa_tests/demo_server.py > demo_server.log 2>&1 &
+          # 同样直接记录演示服务进程，避免启动器退出后留下子进程
+          nohup .venv/bin/python qa_tests/demo_server.py > demo_server.log 2>&1 &
           echo $! > demo_server.pid
           for i in {1..10}; do
             if curl --fail --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
@@ -120,6 +137,10 @@ jobs:
             fi
             sleep 1
           done
+          if ! curl --fail --silent http://localhost:8000/api/v1/utils/health-check/ > /dev/null; then
+            cat demo_server.log
+            exit 1
+          fi
 
       # 同时生成终端结果、JUnit 报告和浏览器可打开的 HTML 报告
       - name: Run API tests

@@ -9,6 +9,7 @@ jobs:
   smokeshow:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       actions: read
       statuses: write
 

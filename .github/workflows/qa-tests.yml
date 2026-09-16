@@ -126,7 +126,7 @@ jobs:
       # 即使测试失败，也保留报告，方便定位问题
       - name: Upload test reports
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: qa-api-test-reports
           path: |
